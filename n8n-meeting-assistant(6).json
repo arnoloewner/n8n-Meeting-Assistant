@@ -1,0 +1,430 @@
+{
+  "name": "n8n-meeting-assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const transcript = $input.item.json.Transkript;\n\nif (!transcript || transcript.trim().length < 20) {\n  throw new Error(\"Transkript ist leer oder zu kurz.\");\n}\n\nconst detectLanguage = (text) => {\n  const germanWords = ['der', 'die', 'das', 'und', 'in', 'zu', 'ist', 'von', 'mit', 'auf'];\n  const englishWords = ['the', 'and', 'to', 'of', 'in', 'is', 'that', 'for', 'with', 'it'];\n  \n  const textLower = text.toLowerCase().split(/\\s+/);\n  const germanCount = textLower.filter(w => germanWords.includes(w)).length;\n  const englishCount = textLower.filter(w => englishWords.includes(w)).length;\n  \n  return englishCount > germanCount ? 'english' : 'german';\n};\n\nconst chunkTranscript = (text, maxTokens = 12000) => {\n  const estimatedTokens = text.length / 4;\n  \n  if (estimatedTokens <= maxTokens) {\n    return [{ chunk: text, index: 0, total: 1 }];\n  }\n  \n  const chunkSize = maxTokens * 4;\n  const overlapSize = chunkSize * 0.1;\n  const chunks = [];\n  let position = 0;\n  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];\n  let currentChunk = '';\n  \n  for (const sentence of sentences) {\n    if ((currentChunk + sentence).length > chunkSize) {\n      if (currentChunk) chunks.push(currentChunk.trim());\n      currentChunk = sentence;\n    } else {\n      currentChunk += sentence;\n    }\n  }\n  if (currentChunk) chunks.push(currentChunk.trim());\n  \n  return chunks.map((chunk, index) => ({\n    chunk,\n    index,\n    total: chunks.length\n  }));\n};\n\nconst language = detectLanguage(transcript);\nconst chunks = chunkTranscript(transcript);\n\nreturn {\n  json: {\n    meeting_title: $input.item.json[\"Meeting-Titel\"] || \"Unbenanntes Meeting\",\n    date: $input.item.json[\"Datum\"] || new Date().toISOString().split('T')[0],\n    transcript: chunks[0].chunk,\n    original_length: transcript.length,\n    language: language,\n    chunks_total: chunks.length,\n    all_chunks: chunks,\n    is_chunked: chunks.length > 1\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "442c87d4-806a-412d-a045-57e401b5b466",
+      "name": "Preprocessing & Language Detection"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "DEIN_API_KEY"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-opus-4-8\",\n  max_tokens: 800,\n  system: \"Du bist ein professioneller Meeting-Protokollant. Antworte ausschließlich auf \" + $json.language + \", prägnant und sachlich.\",\n  messages: [\n    {\n      role: \"user\",\n      content: \"Erstelle eine strukturierte Zusammenfassung des folgenden Meeting-Transkripts mit diesen Abschnitten:\\n\\n**DATUM:** \" + $json.date + \"\\n**TEILNEHMER:** [Liste der identifizierten Teilnehmer]\\n**HAUPTTHEMEN:** [Die 3-5 wichtigsten diskutierten Themen]\\n**ERGEBNIS:** [Konkretes Ergebnis/Outcome]\\n\\nTranskript:\\n\" + $json.transcript\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b7a16c35-065a-42f8-b026-a602c844fdc2",
+      "name": "HTTP Request - Summary",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9clC9oBkpVTie7BN",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.item.json.error || $input.item.json.message || 'Unbekannter Fehler';\nconst statusCode = $input.item.json.statusCode || 500;\n\nreturn {\n  json: {\n    timestamp: new Date().toISOString(),\n    error_source: \"HTTP Request - Summary\",\n    status_code: statusCode,\n    error_message: error.toString(),\n    recovery_status: \"failed\",\n    workflow_terminated: true\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        208
+      ],
+      "id": "7020e276-0e5c-4647-94ff-021faf2935ac",
+      "name": "Error Handler - Summary"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-api-key",
+              "value": "DEIN_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-opus-4-8\",\n  max_tokens: 2000,\n  system: \"Du extrahierst strukturierte Daten aus Meeting-Transkripten. Erkenne auch implizite Deadlines wie 'nächste Woche', 'in 2 Wochen', 'bis Ende des Monats'. Antworte AUSSCHLIESSLICH mit validem JSON, keine Erklärungen.\",\n  messages: [\n    {\n      role: \"user\",\n      content: \"Analysiere das Transkript und extrahiere im exakten Format:\\n{\\\"decisions\\\": [{\\\"decision\\\": \\\"text der Entscheidung\\\"}], \\\"tasks\\\": [{\\\"task\\\": \\\"Aufgabenbeschreibung\\\", \\\"owner\\\": \\\"Name oder 'Nicht zugewiesen'\\\", \\\"deadline\\\": \\\"YYYY-MM-DD oder null\\\", \\\"priority\\\": \\\"hoch|mittel|niedrig\\\"}]}\\n\\nBei impliziten Deadlines (z.B. 'bis nächster Woche'): berechne realistisches Datum.\\n\\nTranskript:\\n\" + $('Preprocessing & Language Detection').item.json.transcript\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "1fe6fec6-59d3-401c-9785-d89c6aa8fee3",
+      "name": "HTTP Request - Extraction",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9clC9oBkpVTie7BN",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.item.json.error || $input.item.json.message || 'Unbekannter Fehler';\nconst statusCode = $input.item.json.statusCode || 500;\n\nreturn {\n  json: {\n    timestamp: new Date().toISOString(),\n    error_source: \"HTTP Request - Extraction\",\n    status_code: statusCode,\n    error_message: error.toString(),\n    recovery_status: \"failed\",\n    workflow_terminated: true\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        208
+      ],
+      "id": "ecea89ea-d1f2-4a0b-9ac6-98ef82264927",
+      "name": "Error Handler - Extraction"
+    },
+    {
+      "parameters": {
+        "jsCode": "let parsed;\ntry {\n  const rawContent = $input.item.json.content[0].text;\n  const cleaned = rawContent.replace(/```json|```/g, \"\").trim();\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error(\"Claude-Antwort konnte nicht als JSON geparst werden: \" + e.message);\n}\n\nif (!Array.isArray(parsed.decisions) || !Array.isArray(parsed.tasks)) {\n  throw new Error(\"Unerwartete JSON-Struktur von Claude erhalten.\");\n}\n\nconst validTasks = parsed.tasks.map(t => ({\n  task: t.task || \"Unbenannte Aufgabe\",\n  owner: t.owner || \"Nicht zugewiesen\",\n  deadline: /^\\d{4}-\\d{2}-\\d{2}$/.test(t.deadline) ? t.deadline : null,\n  priority: [\"hoch\", \"mittel\", \"niedrig\"].includes(t.priority) ? t.priority : \"mittel\"\n}));\n\nreturn {\n  json: {\n    decisions: parsed.decisions,\n    tasks: validTasks,\n    task_count: validTasks.length,\n    meeting_title: $('Preprocessing & Language Detection').item.json.meeting_title,\n    date: $('Preprocessing & Language Detection').item.json.date,\n    summary: $('HTTP Request - Summary').item.json.content[0].text,\n    language: $('Preprocessing & Language Detection').item.json.language\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "a7f85044-e8ce-4c55-b361-77e555e18d1e",
+      "name": "Parse & Validate Results"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "value": "38fa1038-7f1c-80f9-9ce5-f5cac8b29424",
+          "mode": "list",
+          "cachedResultName": "Meeting Log",
+          "cachedResultUrl": "https://app.notion.com/p/38fa10387f1c80f99ce5f5cac8b29424"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Datum|date",
+              "date": "={{ $('Parse & Validate Results').item.json.date }}"
+            },
+            {
+              "key": "Titel|title",
+              "title": "={{ $('Parse & Validate Results').item.json.meeting_title }}"
+            },
+            {
+              "key": "Zusammenfassung|rich_text",
+              "textContent": "={{ $('Parse & Validate Results').item.json.summary }}"
+            },
+            {
+              "key": "Entscheidungen|rich_text",
+              "textContent": "={{ $('Parse & Validate Results').item.json.decisions.map(d => d.decision).join('\\n') }}"
+            },
+            {
+              "key": "Task_Count|number",
+              "numberValue": "={{ $('Parse & Validate Results').item.json.task_count }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        1168,
+        0
+      ],
+      "id": "19efbae4-9a5f-4f3f-be46-bddd726e9afa",
+      "name": "Create Meeting Log Entry",
+      "credentials": {
+        "notionApi": {
+          "id": "Ey3zeRxM8ICQ4aRS",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "value": "38fa1038-7f1c-8027-80fe-cc2573b0ab7d",
+          "mode": "list",
+          "cachedResultName": "Tasks",
+          "cachedResultUrl": "https://app.notion.com/p/38fa10387f1c802780fecc2573b0ab7d"
+        },
+        "title": "={{ $json.task || 'Unbenannte Aufgabe' }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Verantwortlich|select",
+              "selectValue": "={{ $json.owner !== 'Nicht zugewiesen' ? $json.owner : '' }}"
+            },
+            {
+              "key": "Deadline|date",
+              "includeTime": false,
+              "date": "={{ $json.deadline ? $json.deadline : '' }}"
+            },
+            {
+              "key": "Priorität|select",
+              "selectValue": "={{ $json.priority }}"
+            },
+            {
+              "key": "Status|select",
+              "selectValue": "Offen"
+            },
+            {
+              "key": "Meeting_Log|relation"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "0b46ba8d-7226-4bd2-b7e1-3010d23b1336",
+      "name": "Create Task & Link to Meeting",
+      "credentials": {
+        "notionApi": {
+          "id": "Ey3zeRxM8ICQ4aRS",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const logEntry = {\n  timestamp: new Date().toISOString(),\n  event: \"workflow_completed\",\n  meeting_title: $('Parse & Validate Results').item.json.meeting_title,\n  date: $('Parse & Validate Results').item.json.date,\n  decisions_count: $('Parse & Validate Results').item.json.decisions.length,\n  tasks_created: $('Parse & Validate Results').item.json.task_count,\n  language: $('Parse & Validate Results').item.json.language,\n  status: \"success\"\n};\n\nreturn {\n  json: logEntry\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        0
+      ],
+      "id": "59520a3e-19ff-4399-a7cd-afc79bdbd78a",
+      "name": "Log Workflow Completion"
+    },
+    {
+      "parameters": {
+        "formTitle": "Meeting Assistant",
+        "formDescription": "Transkript einfügen für automatische Auswertung",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Meeting-Titel"
+            },
+            {
+              "fieldLabel": "Datum",
+              "fieldType": "date"
+            },
+            {
+              "fieldLabel": "Transkript",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        0
+      ],
+      "id": "3e8bc397-72f3-4fa3-80f0-d291928542ca",
+      "name": "On form submission1",
+      "webhookId": "2b05f139-741b-47a6-9948-f102011f1d4d"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "tasks",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        992,
+        0
+      ],
+      "id": "1b1b90ef-55b2-4732-a15a-122885384b73",
+      "name": "Split Tasks1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Preprocessing & Language Detection": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Summary": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Extraction",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Handler - Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Extraction": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Handler - Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate Results": {
+      "main": [
+        [
+          {
+            "node": "Create Meeting Log Entry",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Tasks1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Meeting Log Entry": {
+      "main": [
+        [
+          {
+            "node": "Log Workflow Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Task & Link to Meeting": {
+      "main": [
+        [
+          {
+            "node": "Log Workflow Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On form submission1": {
+      "main": [
+        [
+          {
+            "node": "Preprocessing & Language Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Tasks1": {
+      "main": [
+        [
+          {
+            "node": "Create Task & Link to Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "cf954768-bf60-4616-95c4-aa677c690bf4",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "02c9eabf3722196ebdce6a1e65214e0280882452c43c104b7fb2393b0fdc62ad"
+  },
+  "nodeGroups": [],
+  "id": "V3sloIBIn9iaS9Qm",
+  "tags": []
+}
